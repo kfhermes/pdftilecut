@@ -25,9 +25,10 @@ const (
 	mmInInch  = 25.4
 	mmInCm    = 10
 
-	bleedMargin       = ptsInInch * 5 / 6 // in pt from media box
-	trimMargin        = ptsInInch / 6     // in pt from bleed box
-	trimMarkLineWidth = 0.5               // in pt
+	bleedMargin       = 40  // in pt from media box
+	trimMargin        = 8   // in pt from bleed box
+	trimMarkLineWidth = 0.5 // in pt
+	outerMargin       = 8   // in pt from trim box, on outer edges with -no-outer-marks
 
 	// Min page size in mm
 	minPageDimension = (bleedMargin + trimMargin + trimMarkLineWidth) * 2 * mmInInch / ptsInInch
@@ -91,6 +92,7 @@ var (
 	tileTitle     = flag.String("title", "", "title to show on margin of each tile (defaults to input filename)")
 	debugMode     = flag.Bool("debug", false, "run in debug mode")
 	longTrimMarks = flag.Bool("long-trim-marks", false, "Use full width/height trim marks")
+	noOuterMarks  = flag.Bool("no-outer-marks", false, "on the outer edges of the original page (sides with no neighbouring tile), use an 8pt white margin with no bleed or trim marks, and move the tile reference into an inner margin")
 	tileSize      tileSizeFlag
 )
 
@@ -125,6 +127,9 @@ type page struct {
 
 	tileX int
 	tileY int
+
+	// Whether each side of the tile lies on the outer edge of the original page
+	outerLeft, outerRight, outerBottom, outerTop bool
 
 	mediaBox   rect
 	cropBox    rect
@@ -269,8 +274,12 @@ func cutPageToTiles(p *page, tileW, tileH, bleedMargin, trimMargin float32) []*p
 			llx := p.trimBox.llx + float32(x)*tileW
 
 			tile := page{
-				tileX: tgx,
-				tileY: tgy,
+				tileX:       tgx,
+				tileY:       tgy,
+				outerLeft:   x == 0,
+				outerRight:  x == hTiles-1,
+				outerBottom: y == 0,
+				outerTop:    y == vTiles-1,
 				mediaBox: rect{
 					llx - trimMargin - bleedMargin,
 					lly - trimMargin - bleedMargin,
@@ -283,6 +292,28 @@ func cutPageToTiles(p *page, tileW, tileH, bleedMargin, trimMargin float32) []*p
 				number:     p.number,
 				contentIds: append([]int{}, p.contentIds...),
 				raw:        p.raw,
+			}
+			// On the outer edges of the original page there is no bleed and
+			// only a narrow white margin: the bleed box sits on the trim box
+			// and the media box is outerMargin beyond it, so those tiles are
+			// smaller pages.
+			if *noOuterMarks {
+				if tile.outerLeft {
+					tile.bleedBox.llx = tile.trimBox.llx
+					tile.mediaBox.llx = tile.trimBox.llx - outerMargin
+				}
+				if tile.outerRight {
+					tile.bleedBox.urx = tile.trimBox.urx
+					tile.mediaBox.urx = tile.trimBox.urx + outerMargin
+				}
+				if tile.outerBottom {
+					tile.bleedBox.lly = tile.trimBox.lly
+					tile.mediaBox.lly = tile.trimBox.lly - outerMargin
+				}
+				if tile.outerTop {
+					tile.bleedBox.ury = tile.trimBox.ury
+					tile.mediaBox.ury = tile.trimBox.ury + outerMargin
+				}
 			}
 			tile.cropBox = tile.mediaBox
 			tilePages = append(tilePages, &tile)
@@ -377,67 +408,96 @@ func createOverlayForPage(overlayID int, p *page) string {
 		bb.llx, bb.lly, bb.urx, bb.lly, bb.urx, bb.ury, bb.llx, bb.ury,
 	)
 	// Draw trim marks
+	// With -no-outer-marks, no marks are drawn in the margin on any side
+	// of the tile that lies on the outer edge of the original page.
+	skipLeft := *noOuterMarks && p.outerLeft
+	skipRight := *noOuterMarks && p.outerRight
+	skipBottom := *noOuterMarks && p.outerBottom
+	skipTop := *noOuterMarks && p.outerTop
 
+	var lines [][4]float32 // x1, y1, x2, y2
 	if !*longTrimMarks {
-		stream += fmt.Sprintf(` q
-		    0 0 0 rg %f w
-	      %f %f m %f %f l S
-	      %f %f m %f %f l S
-	      %f %f m %f %f l S
-	      %f %f m %f %f l S
-	      %f %f m %f %f l S
-	      %f %f m %f %f l S
-	      %f %f m %f %f l S
-	      %f %f m %f %f l S
-	    Q `,
-			trimMarkLineWidth,
-			mb.llx-1, tb.lly, bb.llx, tb.lly,
-			mb.llx-1, tb.ury, bb.llx, tb.ury,
-			tb.llx, mb.ury+1, tb.llx, bb.ury,
-			tb.urx, mb.ury+1, tb.urx, bb.ury,
-			bb.urx, tb.ury, mb.urx+1, tb.ury,
-			bb.urx, tb.lly, mb.urx+1, tb.lly,
-			tb.llx, bb.lly, tb.llx, mb.lly-1,
-			tb.urx, bb.lly, tb.urx, mb.lly-1,
-		)
+		if !skipLeft {
+			lines = append(lines,
+				[4]float32{mb.llx - 1, tb.lly, bb.llx, tb.lly},
+				[4]float32{mb.llx - 1, tb.ury, bb.llx, tb.ury},
+			)
+		}
+		if !skipTop {
+			lines = append(lines,
+				[4]float32{tb.llx, mb.ury + 1, tb.llx, bb.ury},
+				[4]float32{tb.urx, mb.ury + 1, tb.urx, bb.ury},
+			)
+		}
+		if !skipRight {
+			lines = append(lines,
+				[4]float32{bb.urx, tb.ury, mb.urx + 1, tb.ury},
+				[4]float32{bb.urx, tb.lly, mb.urx + 1, tb.lly},
+			)
+		}
+		if !skipBottom {
+			lines = append(lines,
+				[4]float32{tb.llx, bb.lly, tb.llx, mb.lly - 1},
+				[4]float32{tb.urx, bb.lly, tb.urx, mb.lly - 1},
+			)
+		}
 	} else {
-		stream += fmt.Sprintf(` q
-		    0 0 0 rg %f w
-	      %f %f m %f %f l S
-	      %f %f m %f %f l S
-	      %f %f m %f %f l S
-	      %f %f m %f %f l S
-	    Q `,
-			trimMarkLineWidth,
-			mb.llx-1, tb.lly, mb.urx+1, tb.lly, // bottom trim line
-			mb.llx-1, tb.ury, mb.urx+1, tb.ury, // top trim line
-			tb.llx, mb.lly-1, tb.llx, mb.ury+1, // left trim line
-			tb.urx, mb.lly-1, tb.urx, mb.ury+1, // right trim line
+		// Full-length lines are cut short at the bleed box on outer sides
+		// so they don't extend into those margins.
+		x1, x2 := mb.llx-1, mb.urx+1
+		y1, y2 := mb.lly-1, mb.ury+1
+		if skipLeft {
+			x1 = bb.llx
+		}
+		if skipRight {
+			x2 = bb.urx
+		}
+		if skipBottom {
+			y1 = bb.lly
+		}
+		if skipTop {
+			y2 = bb.ury
+		}
+		lines = append(lines,
+			[4]float32{x1, tb.lly, x2, tb.lly}, // bottom trim line
+			[4]float32{x1, tb.ury, x2, tb.ury}, // top trim line
+			[4]float32{tb.llx, y1, tb.llx, y2}, // left trim line
+			[4]float32{tb.urx, y1, tb.urx, y2}, // right trim line
 		)
+	}
+	if len(lines) > 0 {
+		stream += fmt.Sprintf(" q\n 0 0 0 rg %f w\n", trimMarkLineWidth)
+		for _, l := range lines {
+			stream += fmt.Sprintf(" %f %f m %f %f l S\n", l[0], l[1], l[2], l[3])
+		}
+		stream += " Q "
 	}
 	// Draw tile ref
 	vch := float32(vecCharHeight)
-	stream += fmt.Sprintf(`
-    q 0 0 0 rg
-      q 1 0 0 1 %f %f cm %s Q
-      q 1 0 0 1 %f %f cm %s Q
-    Q
-    q
-      0 0 0 rg %f w 2 J
-      %f %f m %f %f l S
-      %f %f m %f %f l S
-      %f %f m %f %f l %f %f l h f
-      %f %f m %f %f l %f %f l h f
-    Q
-  `,
-		bb.urx, bb.ury+vch/2, strToVecChars(numToAlpha(p.tileY), -1, 1),
-		bb.urx+vch/2, bb.ury, strToVecChars(strconv.Itoa(p.tileX+1), 1, -1),
-		trimMarkLineWidth,
-		bb.urx+vch/2, bb.ury+vch/2, bb.urx+vch/2, bb.ury+vch*1.5,
-		bb.urx+vch/2, bb.ury+vch/2, bb.urx+vch*1.5, bb.ury+vch/2,
-		bb.urx+vch/4, bb.ury+vch*1.5, bb.urx+vch*3/4, bb.ury+vch*1.5, bb.urx+vch/2, bb.ury+vch*2,
-		bb.urx+vch*1.5, bb.ury+vch/4, bb.urx+vch*1.5, bb.ury+vch*3/4, bb.urx+vch*2, bb.ury+vch/2,
-	)
+	if !*noOuterMarks {
+		stream += tileRef(p, bb.urx, bb.ury)
+	} else {
+		// Centre the tile ref in the margin of an inner side (one that is
+		// trimmed off or hidden under a neighbouring tile when assembled).
+		// Tiles with no inner side (single tile pages) get no tile ref.
+		rowW := float32(len(numToAlpha(p.tileY))) * vecCharWidth
+		colW := float32(len(strconv.Itoa(p.tileX+1))) * vecCharWidth
+		// Tile ref extent relative to its anchor point (see tileRef)
+		xMin, xMax := -rowW, float32(math.Max(float64(vch*2), float64(vch/2+colW)))
+		yMin, yMax := -vch, vch*2
+		offX, offY := (xMin+xMax)/2, (yMin+yMax)/2
+		midX, midY := (tb.llx+tb.urx)/2, (tb.lly+tb.ury)/2
+		switch {
+		case !p.outerTop:
+			stream += tileRef(p, midX-offX, (bb.ury+mb.ury)/2-offY)
+		case !p.outerRight:
+			stream += tileRef(p, (bb.urx+mb.urx)/2-offX, midY-offY)
+		case !p.outerBottom:
+			stream += tileRef(p, midX-offX, (bb.lly+mb.lly)/2-offY)
+		case !p.outerLeft:
+			stream += tileRef(p, (mb.llx+bb.llx)/2-offX, midY-offY)
+		}
+	}
 	// Draw page ref
 	stream += fmt.Sprintf(` q 0 0 0 rg
     q 1 0 0 1 %f %f cm %s Q
@@ -453,6 +513,34 @@ func createOverlayForPage(overlayID int, p *page) string {
 	p.contentIds = append(p.contentIds, overlayID)
 	return fmt.Sprintf("%d 0 obj\n<< /Length %d >> stream\n%sendstream\nendobj\n",
 		overlayID, len(stream), stream)
+}
+
+// tileRef returns drawing operators for the tile reference: the row letter
+// above and to the left of the anchor point (x, y) with an upward arrow, and
+// the column number below and to the right of it with a rightward arrow.
+func tileRef(p *page, x, y float32) string {
+	vch := float32(vecCharHeight)
+	return fmt.Sprintf(`
+    q 0 0 0 rg
+      q 1 0 0 1 %f %f cm %s Q
+      q 1 0 0 1 %f %f cm %s Q
+    Q
+    q
+      0 0 0 rg %f w 2 J
+      %f %f m %f %f l S
+      %f %f m %f %f l S
+      %f %f m %f %f l %f %f l h f
+      %f %f m %f %f l %f %f l h f
+    Q
+  `,
+		x, y+vch/2, strToVecChars(numToAlpha(p.tileY), -1, 1),
+		x+vch/2, y, strToVecChars(strconv.Itoa(p.tileX+1), 1, -1),
+		trimMarkLineWidth,
+		x+vch/2, y+vch/2, x+vch/2, y+vch*1.5,
+		x+vch/2, y+vch/2, x+vch*1.5, y+vch/2,
+		x+vch/4, y+vch*1.5, x+vch*3/4, y+vch*1.5, x+vch/2, y+vch*2,
+		x+vch*1.5, y+vch/4, x+vch*1.5, y+vch*3/4, x+vch*2, y+vch/2,
+	)
 }
 
 func process() error {
