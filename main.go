@@ -92,7 +92,7 @@ var (
 	tileTitle     = flag.String("title", "", "title to show on margin of each tile (defaults to input filename)")
 	debugMode     = flag.Bool("debug", false, "run in debug mode")
 	longTrimMarks = flag.Bool("long-trim-marks", false, "Use full width/height trim marks")
-	noOuterMarks  = flag.Bool("no-outer-marks", false, "on the outer edges of the original page (sides with no neighbouring tile), use an 8pt white margin with no bleed or trim marks, and move the tile reference into an inner margin")
+	noOuterMarks  = flag.Bool("no-outer-marks", false, "on the outer edges of the original page (sides with no neighbouring tile), use an 8pt white margin with no bleed, trim marks or labels, and move the tile reference into an inner margin")
 	tileSize      tileSizeFlag
 )
 
@@ -498,18 +498,25 @@ func createOverlayForPage(overlayID int, p *page) string {
 			stream += tileRef(p, (mb.llx+bb.llx)/2-offX, midY-offY)
 		}
 	}
-	// Draw page ref
-	stream += fmt.Sprintf(` q 0 0 0 rg
+	// Draw page ref (page number in the top margin, "PAGE" in the left
+	// margin, both at the top-left corner). Omitted when either of those
+	// sides is an outer edge with -no-outer-marks.
+	if !skipTop && !skipLeft {
+		stream += fmt.Sprintf(` q 0 0 0 rg
     q 1 0 0 1 %f %f cm %s Q
     q 1 0 0 1 %f %f cm %s Q
   Q `,
-		tb.llx-vch/2, bb.ury+vch/2, strToVecChars(strconv.Itoa(p.number), -1, 1),
-		bb.llx-vch/2, bb.ury, strToVecChars("PAGE", -1, -1),
-	)
-	// Draw page title
-	stream += fmt.Sprintf(` q 0 0 0 rg q 1 0 0 1 %f %f cm %s Q Q `,
-		tb.llx+vch/2, bb.lly-vch/2, strToVecChars(*tileTitle, 1, -1),
-	)
+			tb.llx-vch/2, bb.ury+vch/2, strToVecChars(strconv.Itoa(p.number), -1, 1),
+			bb.llx-vch/2, bb.ury, strToVecChars("PAGE", -1, -1),
+		)
+	}
+	// Draw page title (bottom margin). Omitted when the bottom is an outer
+	// edge with -no-outer-marks.
+	if !skipBottom {
+		stream += fmt.Sprintf(` q 0 0 0 rg q 1 0 0 1 %f %f cm %s Q Q `,
+			tb.llx+vch/2, bb.lly-vch/2, strToVecChars(*tileTitle, 1, -1),
+		)
+	}
 	p.contentIds = append(p.contentIds, overlayID)
 	return fmt.Sprintf("%d 0 obj\n<< /Length %d >> stream\n%sendstream\nendobj\n",
 		overlayID, len(stream), stream)
