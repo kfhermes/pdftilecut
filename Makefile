@@ -24,7 +24,7 @@ qpdf: zlib libjpeg .submodules-initialized
 	cd $(QPDF_SRC_DIR) && ./autogen.sh && ./configure --disable-shared && make
 
 bin/pdftilecut: qpdf zlib libjpeg
-	go build -o bin/pdftilecut -ldflags "$(XGO_LDFLAGS)"
+	go build -trimpath -buildvcs=false -o bin/pdftilecut -ldflags "-s -w -buildid= $(XGO_LDFLAGS)"
 
 .submodules-initialized:
 ifneq ($$(git rev-parse --git-dir 2>/dev/null),)
