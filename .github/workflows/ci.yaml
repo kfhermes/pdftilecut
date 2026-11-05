@@ -37,6 +37,9 @@ jobs:
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.15.0
+          # Only report issues in lines changed by the push/PR, so code
+          # inherited from upstream isn't held to newer lint rules.
+          only-new-issues: true
       - uses: actions/upload-artifact@v7
         with:
           name: pdftilecut-linux-amd64
